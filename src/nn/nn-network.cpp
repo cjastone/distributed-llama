@@ -22,7 +22,11 @@ typedef SSIZE_T ssize_t;
 #define SOCKET_LAST_ERROR strerror(errno)
 
 #define ACK 23571114
+// Max bytes per send()/recv() call in chunked transfers. Overridable at build
+// time, e.g.: make dllama DL_CHUNK_SIZE=16384
+#ifndef MAX_CHUNK_SIZE
 #define MAX_CHUNK_SIZE 4096
+#endif
 #define MAX_WIRE_STRING 4096
 
 static inline bool isEagainError() {
@@ -65,6 +69,34 @@ static inline void setQuickAck(int socket) {
         throw std::runtime_error("Error setting quick ack");
 #endif
 #endif
+}
+
+// Optional socket tuning, compile-time gated; the default build applies
+// nothing here. All options are best-effort (failures are ignored).
+// DL_SOCK_BUF=<bytes>: request SO_RCVBUF/SO_SNDBUF of this size.
+// DL_BUSY_POLL=<usec>: enable SO_BUSY_POLL busy-waiting on receive (Linux).
+// DL_SOCK_PRIORITY=<n>: set SO_PRIORITY for qdisc prioritization (Linux).
+static inline void setTuningOptions(int socket) {
+#if defined(DL_SOCK_BUF)
+    {
+        int bufSize = DL_SOCK_BUF;
+        setsockopt(socket, SOL_SOCKET, SO_RCVBUF, (char *)&bufSize, sizeof(bufSize));
+        setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (char *)&bufSize, sizeof(bufSize));
+    }
+#endif
+#if defined(DL_BUSY_POLL) && defined(SO_BUSY_POLL)
+    {
+        int busyPollUs = DL_BUSY_POLL;
+        setsockopt(socket, SOL_SOCKET, SO_BUSY_POLL, (char *)&busyPollUs, sizeof(busyPollUs));
+    }
+#endif
+#if defined(DL_SOCK_PRIORITY) && defined(SO_PRIORITY)
+    {
+        int priority = DL_SOCK_PRIORITY;
+        setsockopt(socket, SOL_SOCKET, SO_PRIORITY, (char *)&priority, sizeof(priority));
+    }
+#endif
+    (void)socket;
 }
 
 void setReuseAddr(int socket) {
@@ -171,6 +203,7 @@ static inline int connectSocket(char *host, int port) {
 
     setNoDelay(sock);
     setQuickAck(sock);
+    setTuningOptions(sock);
     return sock;
 }
 
@@ -222,6 +255,7 @@ int createServerSocket(const char *host, const int port) {
 
     setNoDelay(serverSocket);
     setQuickAck(serverSocket);
+    setTuningOptions(serverSocket);
     return serverSocket;
 }
 
@@ -242,6 +276,7 @@ int acceptSocket(int serverSocket) {
         throw std::runtime_error("Error accepting connection");
     setNoDelay(clientSocket);
     setQuickAck(clientSocket);
+    setTuningOptions(clientSocket);
     return clientSocket;
 }
 
