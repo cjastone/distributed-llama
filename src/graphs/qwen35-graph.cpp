@@ -448,12 +448,18 @@ std::unique_ptr<LlmGraph> Qwen35LlmModel::buildGraph(
                 pointerBatchConfig(SRC_BUFFER, yqBufferIndex), pointerBatchConfig(SRC_BUFFER, ffUpBufferIndex),
                 size2D(h->weightType, n.w3Slice.n, n.w3Slice.d0),
                 NnMatmulOpConfig{0, 0, unusedExpertIndexesBufferIndex});
+#if defined(DL_FUSE_SILU_MUL)
+            ff.addOp(OP_SILU_MUL, "block_act_mul", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, ffGateBufferIndex), pointerBatchConfig(SRC_BUFFER, ffGateBufferIndex),
+                size0(), NnSiluMulOpCodeConfig{ffUpBufferIndex});
+#else
             ff.addOp(OP_SILU, "block_act", layerIndex,
                 pointerBatchConfig(SRC_BUFFER, ffGateBufferIndex), pointerBatchConfig(SRC_BUFFER, ffGateBufferIndex),
                 size0(), NnSiluOpCodeConfig{});
             ff.addOp(OP_MUL, "block_mul", layerIndex,
                 pointerBatchConfig(SRC_BUFFER, ffGateBufferIndex), pointerBatchConfig(SRC_BUFFER, ffGateBufferIndex),
                 size0(), NnMulOpCodeConfig{ffUpBufferIndex});
+#endif
             if (ffGateBufferIndex != ffGateQBufferIndex) {
                 ff.addOp(OP_CAST, "block_cast_d2", layerIndex,
                     pointerBatchConfig(SRC_BUFFER, ffGateBufferIndex),

@@ -781,6 +781,52 @@ static void silu_F32(float *output, const unsigned int n, const NnUint nThreads,
     }
 }
 
+// Single-pass fused silu(y) * m, in place on y. Per element this computes the
+// exact same operation sequence as silu_F32 followed by mul_F32 (bit-exact),
+// but without writing the intermediate silu(y) to memory: 2 loads + 1 store
+// per element instead of 3 loads + 2 stores.
+static void siluMul_F32(float *y, const float *m, const unsigned int n, const NnUint nThreads, const NnUint threadIndex) {
+    SPLIT_THREADS(start, end, n, nThreads, threadIndex);
+    unsigned int i = start;
+#if defined(__ARM_NEON)
+    const unsigned int count = end - start;
+    const unsigned int neonEnd = end - (count % 4);
+
+    for (; i < neonEnd; i += 4) {
+        float32x4_t x = vld1q_f32(&y[i]);
+        float32x4_t mv = vld1q_f32(&m[i]);
+        float32x4_t neg_x = vnegq_f32(x);
+        float32x4_t exp_negx = expf_neon(neg_x);
+        float32x4_t denominator = vaddq_f32(exp_negx, vdupq_n_f32(1.0f));
+
+        float32x4_t recip = vrecpeq_f32(denominator);
+        recip = vmulq_f32(recip, vsubq_f32(vdupq_n_f32(2.0f), vmulq_f32(denominator, recip)));
+
+        float32x4_t result = vmulq_f32(vmulq_f32(x, recip), mv);
+        vst1q_f32(&y[i], result);
+    }
+#elif defined(__AVX2__)
+    const unsigned int count = end - start;
+    const unsigned int avxEnd = end - (count % 8);
+
+    const __m256 ones = _mm256_set1_ps(1.0f);
+    const __m256 zero = _mm256_setzero_ps();
+    for (; i < avxEnd; i += 8) {
+        __m256 x_vec = _mm256_loadu_ps(y + i);
+        __m256 m_vec = _mm256_loadu_ps(m + i);
+        __m256 neg_x = _mm256_sub_ps(zero, x_vec);
+        __m256 exp_negx = expf_avx2(neg_x);
+        __m256 denominator = _mm256_add_ps(ones, exp_negx);
+        __m256 result = _mm256_mul_ps(_mm256_div_ps(x_vec, denominator), m_vec);
+        _mm256_storeu_ps(y + i, result);
+    }
+#endif
+    for (; i < end; i++) {
+        float x = y[i];
+        y[i] = (x / (1.0f + expf(-x))) * m[i];
+    }
+}
+
 static void add_F32(float *output, const float *x, const unsigned int n, const NnUint nThreads, const NnUint threadIndex) {
     SPLIT_THREADS(start, end, n, nThreads, threadIndex);
     for (unsigned int i = start; i < end; i++) {
@@ -1730,6 +1776,32 @@ static void mulForward_F32_F32(NnUint nThreads, NnUint threadIndex, NnUint batch
     }
 }
 
+static void initSiluMulForward(NnCpuOpContext *context) {
+    assert(context->weightSize.nBytes == 0);
+    ASSERT_EQ(context->inputSize.x, context->outputSize.x);
+    ASSERT_EQ(context->inputSize.y, context->outputSize.y);
+    ASSERT_EQ(context->inputSize.z, context->outputSize.z);
+}
+
+// Fused OP_SILU + OP_MUL: output = silu(output) * multiplier, in place.
+// Follows the same buffer/indexing convention as mulForward_F32_F32.
+static void siluMulForward_F32_F32(NnUint nThreads, NnUint threadIndex, NnUint batchSize, NnCpuOpContext *context) {
+    const NnSiluMulOpCodeConfig *config = (NnSiluMulOpCodeConfig *)context->opConfig;
+    const float *multiplier = (float *)context->buffers[config->multiplierBufferIndex];
+
+    for (NnUint z = 0u; z < context->inputSize.z; z++) {
+        const NnUint zOffset = z * context->inputSize.y;
+        for (NnUint y = 0u; y < batchSize; y++) {
+            siluMul_F32(
+                (float *)context->output[zOffset + y],
+                &multiplier[context->outputSize.x * (zOffset + y)],
+                context->outputSize.x,
+                nThreads,
+                threadIndex);
+        }
+    }
+}
+
 static void initSigmoidMulForward(NnCpuOpContext *context) {
     const NnSigmoidMulOpConfig *config = (NnSigmoidMulOpConfig *)context->opConfig;
     const NnBufferConfig *multiplierConfig = &context->bufferConfigs[config->multiplierBufferIndex];
@@ -2099,6 +2171,8 @@ NnCpuOpForwardInit getCpuOpForwardInit(NnOpCode code, NnOpQuantType quantType) {
         return initMatmulForward;
     if (code == OP_MUL)
         return initMulForward;
+    if (code == OP_SILU_MUL)
+        return initSiluMulForward;
     if (code == OP_SIGMOID_MUL)
         return initSigmoidMulForward;
     if (code == OP_CAST)
@@ -2159,6 +2233,9 @@ NnCpuOpForward getCpuOpForward(NnOpCode code, NnOpQuantType quantType) {
     }
     if (code == OP_MUL) {
         if (quantType == F32_F32_F32) return mulForward_F32_F32;
+    }
+    if (code == OP_SILU_MUL) {
+        if (quantType == F32_F32_F32) return siluMulForward_F32_F32;
     }
     if (code == OP_SIGMOID_MUL) {
         if (quantType == F32_F32_F32) return sigmoidMulForward_F32_F32;

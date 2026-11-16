@@ -354,6 +354,29 @@ void testSilu() {
     compare_F32("silu_F32", y.data(), expectedOutput, 8, 0.001);
 }
 
+void testSiluMul() {
+    // The fused kernel must produce bit-identical results to
+    // silu_F32 followed by mul_F32, including the non-vectorized tail.
+    constexpr NnUint size = 37u;
+    constexpr NnUint nThreads = 3u;
+    float fused[size];
+    float reference[size];
+    float multiplier[size];
+    for (NnUint i = 0u; i < size; i++) {
+        const float x = ((float)i - 18.0f) * 0.35f;
+        fused[i] = x;
+        reference[i] = x;
+        multiplier[i] = ((float)i - 10.0f) * 0.2f;
+    }
+    for (NnUint threadIndex = 0u; threadIndex < nThreads; threadIndex++) {
+        silu_F32(reference, size, nThreads, threadIndex);
+        siluMul_F32(fused, multiplier, size, nThreads, threadIndex);
+    }
+    for (NnUint threadIndex = 0u; threadIndex < nThreads; threadIndex++)
+        mul_F32(reference, reference, multiplier, size, nThreads, threadIndex);
+    compare_F32("siluMul_F32", fused, reference, size, 0.0f);
+}
+
 // matmul
 void testMatmul_F32_Q40_F32(const NnUint m = 2) {
     const NnUint n = Q80_BLOCK_SIZE * m;
@@ -553,6 +576,7 @@ int main() {
     testMergeSum();
     testSoftmax();
     testSilu();
+    testSiluMul();
     testMatmul_F32_Q40_F32(32);
     testMatmul_F32_Q40_F32(2);
     testMatmul_F32_Q40_F32(1);

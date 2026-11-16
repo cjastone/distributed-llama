@@ -93,6 +93,7 @@ const char *opCodeToString(NnOpCode code) {
     if (code == OP_CAUSAL_CONV1D) return "CAUSAL_CONV1D";
     if (code == OP_GATED_DELTA_NET) return "GATED_DELTA_NET";
     if (code == OP_RMS_NORM_ZERO_CENTERED) return "RMS_NORM_ZERO_CENTERED";
+    if (code == OP_SILU_MUL) return "SILU_MUL";
     throw std::invalid_argument("Unknown op code: " + std::to_string(code));
 }
 

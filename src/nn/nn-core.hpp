@@ -93,6 +93,7 @@ enum NnOpCode {
     OP_CAUSAL_CONV1D,
     OP_GATED_DELTA_NET,
     OP_RMS_NORM_ZERO_CENTERED,
+    OP_SILU_MUL,
 };
 
 enum NnOpQuantType {
@@ -290,6 +291,10 @@ typedef struct {
 typedef struct {
     NnUint multiplierBufferIndex;
 } NnMulOpCodeConfig;
+
+typedef struct {
+    NnUint multiplierBufferIndex;
+} NnSiluMulOpCodeConfig;
 
 typedef struct {
     NnUint scaleBufferIndex;

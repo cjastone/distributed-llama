@@ -440,6 +440,14 @@ std::unique_ptr<LlmGraph> LlamaLlmModel::buildGraph(
                     pointerBatchConfig(SRC_BUFFER, moeLBufferIndex),
                     size3D(h->weightType, h->nExperts, n.w3Slice.n, n.w3Slice.d0),
                     NnMatmulOpConfig{h->nExperts, h->nActiveExperts, moeExpertIndexesBufferIndex});
+#if defined(DL_FUSE_SILU_MUL)
+                ff.addOp(
+                    OP_SILU_MUL, "block_act_mul", layerIndex,
+                    pointerBatchConfig(SRC_BUFFER, moeDBufferIndex),
+                    pointerBatchConfig(SRC_BUFFER, moeDBufferIndex),
+                    size0(),
+                    NnSiluMulOpCodeConfig{moeLBufferIndex});
+#else
                 ff.addOp(
                     OP_SILU, "block_act", layerIndex,
                     pointerBatchConfig(SRC_BUFFER, moeDBufferIndex),
@@ -452,6 +460,7 @@ std::unique_ptr<LlmGraph> LlamaLlmModel::buildGraph(
                     pointerBatchConfig(SRC_BUFFER, moeDBufferIndex),
                     size0(),
                     NnMulOpCodeConfig{moeLBufferIndex});
+#endif
                 if (moeDBufferIndex != moeDQBufferIndex) {
                     ff.addOp(
                         OP_CAST, "block_cast_d2", layerIndex,
@@ -499,6 +508,14 @@ std::unique_ptr<LlmGraph> LlamaLlmModel::buildGraph(
                     pointerBatchConfig(SRC_BUFFER, lBufferIndex),
                     size2D(h->weightType, n.w3Slice.n, n.w3Slice.d0),
                     NnMatmulOpConfig{0, 0, moeExpertIndexesBufferIndex});
+#if defined(DL_FUSE_SILU_MUL)
+                ff.addOp(
+                    OP_SILU_MUL, "block_act_mul", layerIndex,
+                    pointerBatchConfig(SRC_BUFFER, dBufferIndex),
+                    pointerBatchConfig(SRC_BUFFER, dBufferIndex),
+                    size0(),
+                    NnSiluMulOpCodeConfig{lBufferIndex});
+#else
                 ff.addOp(
                     OP_SILU, "block_act", layerIndex,
                     pointerBatchConfig(SRC_BUFFER, dBufferIndex),
@@ -511,6 +528,7 @@ std::unique_ptr<LlmGraph> LlamaLlmModel::buildGraph(
                     pointerBatchConfig(SRC_BUFFER, dBufferIndex),
                     size0(),
                     NnMulOpCodeConfig{lBufferIndex});
+#endif
                 if (dBufferIndex != dqBufferIndex) {
                     ff.addOp(
                         OP_CAST, "block_cast_d2", layerIndex,

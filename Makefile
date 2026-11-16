@@ -44,6 +44,9 @@ endif
 ifdef DL_MM_UNROLL4
 	CXXFLAGS += -DDL_MM_UNROLL4
 endif
+ifdef DL_FUSE_SILU_MUL
+	CXXFLAGS += -DDL_FUSE_SILU_MUL
+endif
 
 ifdef DLLAMA_VULKAN
 	CGLSLC = glslc
