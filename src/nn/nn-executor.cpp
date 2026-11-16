@@ -1,6 +1,31 @@
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include "nn-executor.hpp"
+
+#define PIPE_ALIGNMENT 64
+
+static NnByte *allocAlignedPipe(NnSize size) {
+    NnByte *pipe;
+#ifdef _WIN32
+    pipe = (NnByte *)_aligned_malloc(size, PIPE_ALIGNMENT);
+    if (pipe == NULL)
+        throw std::runtime_error("_aligned_malloc failed");
+#else
+    if (posix_memalign((void **)&pipe, PIPE_ALIGNMENT, size) != 0)
+        throw std::runtime_error("posix_memalign failed");
+#endif
+    return pipe;
+}
+
+static void releaseAlignedPipe(NnByte *pipe) {
+#ifdef _WIN32
+    _aligned_free(pipe);
+#else
+    free(pipe);
+#endif
+}
 
 void NnFakeNodeSynchronizer::sync(NnUint segmentIndex, NnUint nThreads, NnUint threadIndex) {
     // Nothing
@@ -15,7 +40,7 @@ NnNetExecution::NnNetExecution(NnUint nThreads, NnNetConfig *netConfig) {
     pipes = new NnByte *[netConfig->nPipes];
     for (NnUint pipeIndex = 0; pipeIndex < netConfig->nPipes; pipeIndex++) {
         NnPipeConfig *pipeConfig = &netConfig->pipes[pipeIndex];
-        NnByte *pipe = new NnByte[pipeConfig->size.nBytes];
+        NnByte *pipe = allocAlignedPipe(pipeConfig->size.nBytes);
         std::memset(pipe, 0, pipeConfig->size.nBytes);
         pipes[pipeIndex] = pipe;
     }
@@ -23,7 +48,7 @@ NnNetExecution::NnNetExecution(NnUint nThreads, NnNetConfig *netConfig) {
 
 NnNetExecution::~NnNetExecution() {
     for (NnUint pipeIndex = 0; pipeIndex < nPipes; pipeIndex++)
-        delete[] pipes[pipeIndex];
+        releaseAlignedPipe(pipes[pipeIndex]);
     delete[] pipes;
 }
 

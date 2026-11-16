@@ -1,6 +1,8 @@
 #include "nn-cpu.hpp"
 #include "nn-cpu-ops.hpp"
 #include <cassert>
+#include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 #include <thread>
@@ -25,7 +27,13 @@ static NnByte *allocAlignedBuffer(NnSize size) {
 #else
     if (posix_memalign((void **)&buffer, BUFFER_ALIGNMENT, size) != 0)
         throw std::runtime_error("posix_memalign failed");
-    mlock(buffer, size);
+    if (mlock(buffer, size) != 0) {
+        static bool mlockWarningPrinted = false;
+        if (!mlockWarningPrinted) {
+            fprintf(stderr, "⚠️  mlock() failed (%s); buffers may be swapped out. Consider raising the memlock limit (ulimit -l).\n", strerror(errno));
+            mlockWarningPrinted = true;
+        }
+    }
 #endif
     return buffer;
 }
