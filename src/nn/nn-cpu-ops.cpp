@@ -480,7 +480,72 @@ static void matmul_Q80_Q40_F32(float *output, const NnBlockQ80 *x, const NnBlock
             sumv3 = vmlaq_n_f32(sumv3, vcvtq_f32_s32(p3), CONVERT_F16_TO_F32(w3->d) * CONVERT_F16_TO_F32(x3->d));
         }
 #else
+#if defined(DL_MM_UNROLL4)
+        // Optional 4-block unroll of the non-dotprod NEON path (default off).
+        // Numerically equivalent but not bit-identical to the 2-block loop:
+        // blocks are distributed over the four accumulators in a different
+        // order, so float rounding can differ in the last ulp.
+        for (; j + 3 < nBlocks; j += 4) {
+#if defined(DL_MM_PREFETCH)
+            __builtin_prefetch(&w[di * nBlocks + j + DL_MM_PREFETCH]);
+            __builtin_prefetch(&x[j + DL_MM_PREFETCH]);
+#endif
+            const NnBlockQ40 *w0 = &w[di * nBlocks + j];
+            const NnBlockQ40 *w1 = &w[di * nBlocks + j + 1];
+            const NnBlockQ40 *w2 = &w[di * nBlocks + j + 2];
+            const NnBlockQ40 *w3 = &w[di * nBlocks + j + 3];
+            const NnBlockQ80 *x0 = &x[j];
+            const NnBlockQ80 *x1 = &x[j + 1];
+            const NnBlockQ80 *x2 = &x[j + 2];
+            const NnBlockQ80 *x3 = &x[j + 3];
+
+            const uint8x16_t w0qs = vld1q_u8(w0->qs);
+            const uint8x16_t w1qs = vld1q_u8(w1->qs);
+            const uint8x16_t w2qs = vld1q_u8(w2->qs);
+            const uint8x16_t w3qs = vld1q_u8(w3->qs);
+
+            const int8x16_t w0l = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(w0qs, m4b)), s8b);
+            const int8x16_t w0h = vsubq_s8(vreinterpretq_s8_u8(vshrq_n_u8(w0qs, 4)), s8b);
+            const int8x16_t w1l = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(w1qs, m4b)), s8b);
+            const int8x16_t w1h = vsubq_s8(vreinterpretq_s8_u8(vshrq_n_u8(w1qs, 4)), s8b);
+            const int8x16_t w2l = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(w2qs, m4b)), s8b);
+            const int8x16_t w2h = vsubq_s8(vreinterpretq_s8_u8(vshrq_n_u8(w2qs, 4)), s8b);
+            const int8x16_t w3l = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(w3qs, m4b)), s8b);
+            const int8x16_t w3h = vsubq_s8(vreinterpretq_s8_u8(vshrq_n_u8(w3qs, 4)), s8b);
+
+            const int8x16_t x0l = vld1q_s8(x0->qs);
+            const int8x16_t x0h = vld1q_s8(x0->qs + 16);
+            const int8x16_t x1l = vld1q_s8(x1->qs);
+            const int8x16_t x1h = vld1q_s8(x1->qs + 16);
+            const int8x16_t x2l = vld1q_s8(x2->qs);
+            const int8x16_t x2h = vld1q_s8(x2->qs + 16);
+            const int8x16_t x3l = vld1q_s8(x3->qs);
+            const int8x16_t x3h = vld1q_s8(x3->qs + 16);
+
+            const int32x4_t p0 = vaddq_s32(
+                vaddq_s32(vpaddlq_s16(vmull_s8(vget_low_s8(w0l), vget_low_s8(x0l))), vpaddlq_s16(vmull_s8(vget_high_s8(w0l), vget_high_s8(x0l)))),
+                vaddq_s32(vpaddlq_s16(vmull_s8(vget_low_s8(w0h), vget_low_s8(x0h))), vpaddlq_s16(vmull_s8(vget_high_s8(w0h), vget_high_s8(x0h)))));
+            const int32x4_t p1 = vaddq_s32(
+                vaddq_s32(vpaddlq_s16(vmull_s8(vget_low_s8(w1l), vget_low_s8(x1l))), vpaddlq_s16(vmull_s8(vget_high_s8(w1l), vget_high_s8(x1l)))),
+                vaddq_s32(vpaddlq_s16(vmull_s8(vget_low_s8(w1h), vget_low_s8(x1h))), vpaddlq_s16(vmull_s8(vget_high_s8(w1h), vget_high_s8(x1h)))));
+            const int32x4_t p2 = vaddq_s32(
+                vaddq_s32(vpaddlq_s16(vmull_s8(vget_low_s8(w2l), vget_low_s8(x2l))), vpaddlq_s16(vmull_s8(vget_high_s8(w2l), vget_high_s8(x2l)))),
+                vaddq_s32(vpaddlq_s16(vmull_s8(vget_low_s8(w2h), vget_low_s8(x2h))), vpaddlq_s16(vmull_s8(vget_high_s8(w2h), vget_high_s8(x2h)))));
+            const int32x4_t p3 = vaddq_s32(
+                vaddq_s32(vpaddlq_s16(vmull_s8(vget_low_s8(w3l), vget_low_s8(x3l))), vpaddlq_s16(vmull_s8(vget_high_s8(w3l), vget_high_s8(x3l)))),
+                vaddq_s32(vpaddlq_s16(vmull_s8(vget_low_s8(w3h), vget_low_s8(x3h))), vpaddlq_s16(vmull_s8(vget_high_s8(w3h), vget_high_s8(x3h)))));
+
+            sumv0 = vmlaq_n_f32(sumv0, vcvtq_f32_s32(p0), CONVERT_F16_TO_F32(w0->d) * CONVERT_F16_TO_F32(x0->d));
+            sumv1 = vmlaq_n_f32(sumv1, vcvtq_f32_s32(p1), CONVERT_F16_TO_F32(w1->d) * CONVERT_F16_TO_F32(x1->d));
+            sumv2 = vmlaq_n_f32(sumv2, vcvtq_f32_s32(p2), CONVERT_F16_TO_F32(w2->d) * CONVERT_F16_TO_F32(x2->d));
+            sumv3 = vmlaq_n_f32(sumv3, vcvtq_f32_s32(p3), CONVERT_F16_TO_F32(w3->d) * CONVERT_F16_TO_F32(x3->d));
+        }
+#endif
         for (; j + 1 < nBlocks; j += 2) {
+#if defined(DL_MM_PREFETCH)
+            __builtin_prefetch(&w[di * nBlocks + j + DL_MM_PREFETCH]);
+            __builtin_prefetch(&x[j + DL_MM_PREFETCH]);
+#endif
             const NnBlockQ40 *w0 = &w[di * nBlocks + j];
             const NnBlockQ40 *w1 = &w[di * nBlocks + j + 1];
             const NnBlockQ80 *x0 = &x[j];
@@ -488,7 +553,7 @@ static void matmul_Q80_Q40_F32(float *output, const NnBlockQ80 *x, const NnBlock
 
             const uint8x16_t w0qs = vld1q_u8(w0->qs);
             const uint8x16_t w1qs = vld1q_u8(w1->qs);
-            
+
             int8x16_t w0l = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(w0qs, m4b)), s8b);
             int8x16_t w0h = vsubq_s8(vreinterpretq_s8_u8(vshrq_n_u8(w0qs, 4)), s8b);
             int8x16_t w1l = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(w1qs, m4b)), s8b);
@@ -503,7 +568,7 @@ static void matmul_Q80_Q40_F32(float *output, const NnBlockQ80 *x, const NnBlock
             const int16x8_t pl0h = vmull_s8(vget_high_s8(w0l), vget_high_s8(x0l));
             const int16x8_t ph0l = vmull_s8(vget_low_s8(w0h), vget_low_s8(x0h));
             const int16x8_t ph0h = vmull_s8(vget_high_s8(w0h), vget_high_s8(x0h));
-            
+
             const int16x8_t pl1l = vmull_s8(vget_low_s8(w1l), vget_low_s8(x1l));
             const int16x8_t pl1h = vmull_s8(vget_high_s8(w1l), vget_high_s8(x1l));
             const int16x8_t ph1l = vmull_s8(vget_low_s8(w1h), vget_low_s8(x1h));
