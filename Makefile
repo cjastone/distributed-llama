@@ -48,6 +48,18 @@ ifdef DL_FUSE_SILU_MUL
 	CXXFLAGS += -DDL_FUSE_SILU_MUL
 endif
 
+# Optional compiler-optimization opt-ins (default off). The CPU target stays
+# -march=native in all cases; measure before adopting any of these.
+ifdef DL_LTO
+	CXXFLAGS += -flto
+endif
+ifdef DL_UNROLL
+	CXXFLAGS += -funroll-loops
+endif
+ifdef DL_ALIGN64
+	CXXFLAGS += -falign-functions=64 -falign-loops=64
+endif
+
 ifdef DLLAMA_VULKAN
 	CGLSLC = glslc
 
