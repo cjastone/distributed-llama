@@ -59,6 +59,8 @@ AppCliArgs AppCliArgs::parse(
     args.chatTemplateType = TEMPLATE_UNKNOWN;
     args.maxSeqLen = 0;
     args.netTurbo = true;
+    args.specNgram = 0;
+    args.specMin = 2;
     args.gpuIndex = -1;
     args.gpuSegmentFrom = -1;
     args.gpuSegmentTo = -1;
@@ -144,6 +146,10 @@ AppCliArgs AppCliArgs::parse(
             args.gpuSegmentTo = atoi(separator + 1);
         } else if (std::strcmp(name, "--net-turbo") == 0) {
             args.netTurbo = atoi(value) == 1;
+        } else if (std::strcmp(name, "--spec-ngram") == 0) {
+            args.specNgram = (NnUint)atoi(value);
+        } else if (std::strcmp(name, "--spec-min") == 0) {
+            args.specMin = (NnUint)atoi(value);
         } else {
             throw std::runtime_error("Unknown option: " + std::string(name));
         }

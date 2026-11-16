@@ -33,6 +33,8 @@ public:
     ChatTemplateType chatTemplateType;
     NnUint maxSeqLen;
     bool netTurbo;
+    NnUint specNgram; // Lossless prompt-lookup speculative decoding: max draft tokens per step (0 = disabled)
+    NnUint specMin;   // n-gram match length for prompt-lookup drafting
     int gpuIndex;
     int gpuSegmentFrom;
     int gpuSegmentTo;
