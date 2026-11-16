@@ -43,6 +43,9 @@ while getopts "l:m:t:w:s:p:o:n:q:b:e:h" opt; do
 done
 [ -z "$MODEL" ] || [ -z "$TOKENIZER" ] && usage
 [ -x "$DLLAMA" ] || { echo "dllama binary not found at $DLLAMA (build it first)"; exit 1; }
+[ -x /usr/bin/time ] || { echo "/usr/bin/time not found (needed for RSS): sudo apt install -y time"; exit 1; }
+[ -f "$MODEL" ] || { echo "model not found: $MODEL"; exit 1; }
+[ -f "$TOKENIZER" ] || { echo "tokenizer not found: $TOKENIZER"; exit 1; }
 
 read_eth_bytes() {
     awk '/eth0:/ {print $2, $10}' /proc/net/dev
