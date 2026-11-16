@@ -4,6 +4,55 @@
 #include <stdexcept>
 #include "nn-executor.hpp"
 
+// Memory ordering for the executor barrier atomics. With DL_ATOMIC_OPT the
+// barrier uses acquire/release semantics (cheaper than the default
+// sequentially-consistent ordering, which lowers to full memory barriers on
+// ARM); without the gate everything stays seq_cst, matching the original
+// behavior exactly.
+#if defined(DL_ATOMIC_OPT)
+    #define DL_MO_ACQUIRE std::memory_order_acquire
+    #define DL_MO_RELEASE std::memory_order_release
+    #define DL_MO_ACQ_REL std::memory_order_acq_rel
+    #define DL_MO_RELAXED std::memory_order_relaxed
+#else
+    #define DL_MO_ACQUIRE std::memory_order_seq_cst
+    #define DL_MO_RELEASE std::memory_order_seq_cst
+    #define DL_MO_ACQ_REL std::memory_order_seq_cst
+    #define DL_MO_RELAXED std::memory_order_seq_cst
+#endif
+
+// DL_WFE: the inter-step barrier waits with WFE and the releasing thread
+// broadcasts SEV (ARM), or waits with PAUSE (x86). WFE parks the core in a
+// low-power state until an event arrives, instead of burning cycles in the
+// spin loop. Without the gate the barrier is the original raw spin.
+#if defined(DL_WFE) && (defined(__aarch64__) || defined(__arm__))
+    #define DL_BARRIER_WAIT() asm volatile("wfe" ::: "memory")
+    #define DL_BARRIER_WAKE() asm volatile("sev" ::: "memory")
+#elif defined(DL_WFE) && (defined(__x86_64__) || defined(__i386__))
+    #define DL_BARRIER_WAIT() asm volatile("pause" ::: "memory")
+    #define DL_BARRIER_WAKE()
+#else
+    #define DL_BARRIER_WAIT()
+    #define DL_BARRIER_WAKE()
+#endif
+
+// DL_PERSISTENT_POOL: worker threads are spawned once in the constructor and
+// reused for every forward() call, instead of pthread_create/pthread_join per
+// call. The pool's own wait sites (between forward() calls) always relax the
+// core, independent of DL_WFE.
+#if defined(DL_PERSISTENT_POOL)
+    #if defined(__aarch64__) || defined(__arm__)
+        #define DL_POOL_WAIT() asm volatile("wfe" ::: "memory")
+        #define DL_POOL_WAKE() asm volatile("sev" ::: "memory")
+    #elif defined(__x86_64__) || defined(__i386__)
+        #define DL_POOL_WAIT() asm volatile("pause" ::: "memory")
+        #define DL_POOL_WAKE()
+    #else
+        #define DL_POOL_WAIT()
+        #define DL_POOL_WAKE()
+    #endif
+#endif
+
 #define PIPE_ALIGNMENT 64
 
 static NnByte *allocAlignedPipe(NnSize size) {
@@ -64,8 +113,13 @@ NnExecutorDevice::NnExecutorDevice(NnDevice *device, int segmentFrom, int segmen
 }
 
 NnExecutorException::NnExecutorException(const std::string message)
-    : std::runtime_error(message) 
+    : std::runtime_error(message)
 {}
+
+#if defined(DL_PERSISTENT_POOL)
+// Defined later in this file.
+static void *executorWorkerLoop(void *arg);
+#endif
 
 NnExecutor::NnExecutor(NnNetConfig *netConfig, NnNodeConfig *nodeConfig, std::vector<NnExecutorDevice> *devices, NnNetExecution *netExecution, NnNodeSynchronizer *synchronizer, bool benchmark)
     : segments(nodeConfig->nSegments), steps()
@@ -125,9 +179,28 @@ NnExecutor::NnExecutor(NnNetConfig *netConfig, NnNodeConfig *nodeConfig, std::ve
         thread->threadIndex = threadIndex;
         thread->context = &context;
     }
+
+#if defined(DL_PERSISTENT_POOL)
+    // Spawn N-1 worker threads once and reuse them for every forward() call.
+    // Thread 0 is the calling thread and is not created here.
+    context.generation.store(0, DL_MO_RELAXED);
+    context.workersDone.store(0, DL_MO_RELAXED);
+    context.shutdown.store(false, DL_MO_RELAXED);
+    for (NnUint threadIndex = 1; threadIndex < netExecution->nThreads; threadIndex++) {
+        int result = pthread_create(&threads[threadIndex].handler, NULL, (PthreadFunc)executorWorkerLoop, (void *)&threads[threadIndex]);
+        assert(result == 0 && "Failed to create worker thread");
+    }
+#endif
 }
 
 NnExecutor::~NnExecutor() {
+#if defined(DL_PERSISTENT_POOL)
+    context.shutdown.store(true, std::memory_order_release);
+    context.generation.fetch_add(1, std::memory_order_release);
+    DL_POOL_WAKE();
+    for (NnUint threadIndex = 1; threadIndex < netExecution->nThreads; threadIndex++)
+        pthread_join(threads[threadIndex].handler, NULL);
+#endif
     if (context.timer != nullptr)
         delete context.timer;
     delete[] threads;
@@ -165,8 +238,8 @@ static inline void *executorThreadHandler(void *arg) {
     NnUint nThreads = context->nThreads;
     NnUint doneCount = nThreads - 1;
 
-    while (context->isAlive.load()) {
-        const unsigned int currentStepIndex = context->currentStepIndex.load();
+    while (context->isAlive.load(DL_MO_ACQUIRE)) {
+        const unsigned int currentStepIndex = context->currentStepIndex.load(DL_MO_ACQUIRE);
         if (currentStepIndex == context->nSteps)
             break;
 
@@ -174,12 +247,12 @@ static inline void *executorThreadHandler(void *arg) {
         try {
             executeStep(step, nThreads, thread, context);
         } catch (const std::runtime_error &e) {
-            context->isAlive.store(false);
+            context->isAlive.store(false, DL_MO_RELEASE);
             printf("🚨 Execution error: %s\n", e.what());
             break;
         }
 
-        NnUint currentCount = context->doneThreadCount.fetch_add(1);
+        NnUint currentCount = context->doneThreadCount.fetch_add(1, DL_MO_ACQ_REL);
         if (currentCount == doneCount) {
             if (context->timer != nullptr) {
                 NnUint time = context->timer->elapsedMicroseconds();
@@ -187,17 +260,50 @@ static inline void *executorThreadHandler(void *arg) {
                 context->timer->reset();
             }
 
-            context->doneThreadCount.store(0);
-            context->currentStepIndex.fetch_add(1);
+            context->doneThreadCount.store(0, DL_MO_RELAXED);
+            context->currentStepIndex.fetch_add(1, DL_MO_RELEASE);
+            DL_BARRIER_WAKE();
         } else {
             while (
-                context->currentStepIndex.load() == currentStepIndex &&
-                context->isAlive.load()
-            );
+                context->currentStepIndex.load(DL_MO_ACQUIRE) == currentStepIndex &&
+                context->isAlive.load(DL_MO_ACQUIRE)
+            ) {
+                DL_BARRIER_WAIT();
+            }
         }
     }
     return nullptr;
 }
+
+#if defined(DL_PERSISTENT_POOL)
+// Worker thread main loop: waits for a new forward() call (generation bump),
+// runs the step loop, signals completion, repeats. The thread's lifetime spans
+// the whole NnExecutor, saving one pthread_create + pthread_join per
+// forward() call.
+static void *executorWorkerLoop(void *arg) {
+    NnExecutorThread *thread = (NnExecutorThread *)arg;
+    NnExecutorContext *context = thread->context;
+    unsigned long long lastGen = 0;
+
+    while (true) {
+        unsigned long long gen;
+        for (;;) {
+            gen = context->generation.load(std::memory_order_acquire);
+            if (gen != lastGen) break;
+            if (context->shutdown.load(std::memory_order_acquire)) return nullptr;
+            DL_POOL_WAIT();
+        }
+        if (context->shutdown.load(std::memory_order_acquire)) return nullptr;
+        lastGen = gen;
+
+        executorThreadHandler((void *)thread);
+
+        context->workersDone.fetch_add(1, std::memory_order_release);
+        // Wake thread 0 waiting in forward() for workersDone.
+        DL_POOL_WAKE();
+    }
+}
+#endif
 
 void NnExecutor::forward() {
     assert(netExecution->batchSize > 0);
@@ -213,6 +319,20 @@ void NnExecutor::forward() {
         context.timer->reset();
     }
 
+#if defined(DL_PERSISTENT_POOL)
+    context.workersDone.store(0, DL_MO_RELAXED);
+    // Release the workers waiting in executorWorkerLoop; they re-check the
+    // generation counter with acquire semantics, which makes the resets above
+    // visible to them.
+    context.generation.fetch_add(1, std::memory_order_release);
+    DL_POOL_WAKE();
+
+    executorThreadHandler((void *)&threads[0]);
+
+    const NnUint expectedDone = nThreads - 1;
+    while (context.workersDone.load(std::memory_order_acquire) < expectedDone)
+        DL_POOL_WAIT();
+#else
     NnUint threadIndex;
     for (threadIndex = 1; threadIndex < nThreads; threadIndex++) {
         int result = pthread_create(&threads[threadIndex].handler, NULL, (PthreadFunc)executorThreadHandler, (void *)&threads[threadIndex]);
@@ -221,8 +341,9 @@ void NnExecutor::forward() {
     executorThreadHandler((void *)&threads[0]);
     for (threadIndex = 1; threadIndex < nThreads; threadIndex++)
         pthread_join(threads[threadIndex].handler, NULL);
+#endif
 
-    if (!context.isAlive.load())
+    if (!context.isAlive.load(DL_MO_ACQUIRE))
         throw NnExecutorException("Execution failed in one of the threads");
 }
 

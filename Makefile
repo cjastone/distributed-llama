@@ -15,6 +15,18 @@ ifdef WVLA
 	CXXFLAGS += -Wvla-extension
 endif
 
+# Optional performance gates (default off; the default build is unchanged).
+# Example: make dllama DL_PERSISTENT_POOL=1 DL_ATOMIC_OPT=1 DL_WFE=1
+ifdef DL_ATOMIC_OPT
+	CXXFLAGS += -DDL_ATOMIC_OPT
+endif
+ifdef DL_PERSISTENT_POOL
+	CXXFLAGS += -DDL_PERSISTENT_POOL
+endif
+ifdef DL_WFE
+	CXXFLAGS += -DDL_WFE
+endif
+
 ifdef DLLAMA_VULKAN
 	CGLSLC = glslc
 

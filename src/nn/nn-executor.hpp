@@ -7,6 +7,16 @@
 #include <stdexcept>
 #include "pthread.h"
 
+// Optional, compile-time gated performance features. The default build
+// (no gates defined) behaves exactly like the original implementation.
+// DL_ATOMIC_OPT: pad the barrier atomics to separate cache lines (and use
+//                acquire/release memory ordering in nn-executor.cpp).
+#if defined(DL_ATOMIC_OPT)
+    #define DL_CACHE_ALIGN alignas(64)
+#else
+    #define DL_CACHE_ALIGN
+#endif
+
 class NnDeviceSegment {
 public:
     virtual ~NnDeviceSegment() {};
@@ -72,9 +82,16 @@ typedef struct {
     NnUint nSteps;
     NnExecutorStep *steps;
     NnNodeSynchronizer *synchronizer;
-    std::atomic_uint currentStepIndex;
-    std::atomic_uint doneThreadCount;
-    std::atomic_bool isAlive;
+    DL_CACHE_ALIGN std::atomic_uint currentStepIndex;
+    DL_CACHE_ALIGN std::atomic_uint doneThreadCount;
+    DL_CACHE_ALIGN std::atomic_bool isAlive;
+#if defined(DL_PERSISTENT_POOL)
+    // Persistent worker pool state: workers wait for `generation` to advance,
+    // run the step loop, then report via `workersDone`.
+    DL_CACHE_ALIGN std::atomic<unsigned long long> generation;
+    DL_CACHE_ALIGN std::atomic_uint workersDone;
+    DL_CACHE_ALIGN std::atomic_bool shutdown;
+#endif
     NnUint batchSize;
     Timer *timer;
     NnUint totalTime[N_STEP_TYPES];
